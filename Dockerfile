@@ -36,11 +36,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copia il codice applicativo
 COPY app/ ./app/
 
-# Railway inietta $PORT a runtime. Usiamo una entry point script per
-# permettere l'espansione della variabile d'ambiente in modo affidabile,
-# evitando ambiguità tra shell-form e exec-form del CMD.
-RUN echo '#!/bin/bash\nconda run -n arflow --no-capture-output uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}' > /app/start.sh && \
-    chmod +x /app/start.sh
+# Script di avvio copiato direttamente (più affidabile della generazione con echo,
+# che può corrompere i newline secondo la shell di build usata da Railway)
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
 
 EXPOSE 8000
 CMD ["/app/start.sh"]
