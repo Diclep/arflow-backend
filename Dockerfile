@@ -11,7 +11,7 @@ WORKDIR /app
 # Le altre sono necessarie per il rendering OpenGL anche se headless
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
-    libgl1-mesa-glx \
+    libgl1 \
     libglu1-mesa \
     libxmu6 \
     libxi6 \
