@@ -36,6 +36,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copia il codice applicativo
 COPY app/ ./app/
 
-# Railway inietta $PORT a runtime — usiamo conda run per eseguire nell'ambiente giusto
+# Railway inietta $PORT a runtime. Usiamo una entry point script per
+# permettere l'espansione della variabile d'ambiente in modo affidabile,
+# evitando ambiguità tra shell-form e exec-form del CMD.
+RUN echo '#!/bin/bash\nconda run -n arflow --no-capture-output uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}' > /app/start.sh && \
+    chmod +x /app/start.sh
+
 EXPOSE 8000
-CMD conda run -n arflow --no-capture-output uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD ["/app/start.sh"]
