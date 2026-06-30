@@ -6,6 +6,20 @@ FROM continuumio/miniconda3:latest
 
 WORKDIR /app
 
+# Librerie di sistema richieste a runtime da OpenCASCADE (OpenGL, OpenMP, X11)
+# libgomp1: runtime OpenMP, usato internamente da OCCT per il multi-threading
+# Le altre sono necessarie per il rendering OpenGL anche se headless
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    libgl1-mesa-glx \
+    libglu1-mesa \
+    libxmu6 \
+    libxi6 \
+    libxext6 \
+    libsm6 \
+    libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Crea ambiente conda con Python 3.11 + pythonocc-core da conda-forge
 RUN conda create -n arflow python=3.11 -y && \
     conda install -n arflow -c conda-forge pythonocc-core=7.9.3 -y && \
