@@ -1,7 +1,9 @@
 """
 ARFlow Backend — Microservizio di conversione modelli 3D
-Pipeline: GLB/OBJ/STL -> OpenUSD (hub interno nascosto) -> GLB
-(STEP/STP e altri formati CAD nativi sono rimandati a una fase successiva)
+Pipeline: GLB/glTF/OBJ/STL/PLY/FBX/ABC -> OpenUSD (hub interno nascosto,
+via Blender headless) -> GLB
+(STEP/STP e altri formati CAD nativi restano fuori: Blender non li supporta
+nativamente, richiederebbero un add-on dedicato o OpenCASCADE — fase futura)
 """
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +16,7 @@ from app.chat_service import ask_gemini
 app = FastAPI(
     title="ARFlow Conversion Backend",
     description="Microservizio per conversione modelli 3D verso OpenUSD e glTF/GLB",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 app.add_middleware(
@@ -28,7 +30,7 @@ app.add_middleware(
 
 @app.get("/")
 def root():
-    return {"service": "ARFlow Conversion Backend", "status": "online", "version": "0.3.0"}
+    return {"service": "ARFlow Conversion Backend", "status": "online", "version": "0.4.0"}
 
 
 @app.get("/health")
@@ -52,18 +54,17 @@ class ConvertResponse(BaseModel):
     message: str
 
 
-# STEP/STP e altri formati CAD nativi sono rimandati a una fase successiva
-# (richiedono OpenCASCADE/pythonocc-core, rimosso per semplificare lo stack).
-SUPPORTED_FORMATS = ["glb", "gltf", "obj", "stl"]
+# Formati supportati nativamente da Blender headless.
+# STEP/STP/IGES restano fuori: Blender non li importa senza add-on dedicato.
+SUPPORTED_FORMATS = ["glb", "gltf", "obj", "stl", "ply", "fbx", "abc"]
 
 
 @app.post("/convert", response_model=ConvertResponse)
 def convert_file(req: ConvertRequest, background_tasks: BackgroundTasks):
     """
-    Avvia la conversione in background: file sorgente -> USD (hub interno) -> GLB.
-    Nessuna coda esterna (Celery/Redis): elaborazione via FastAPI BackgroundTasks.
-    Lo stato del job va monitorato leggendo la tabella `models` su Supabase
-    (colonna status: processing / ready / error).
+    Avvia la conversione in background: file sorgente -> USD (hub interno,
+    via Blender headless) -> GLB. Stato monitorabile su Supabase (colonna
+    status: processing / ready / error).
     """
     fmt = req.format.lower()
     if fmt not in SUPPORTED_FORMATS:
@@ -72,7 +73,7 @@ def convert_file(req: ConvertRequest, background_tasks: BackgroundTasks):
             detail=(
                 f"Formato '{fmt}' non ancora supportato. "
                 f"Supportati ora: {SUPPORTED_FORMATS}. "
-                f"STEP/STP arriveranno in una fase successiva."
+                f"STEP/STP/IGES richiedono un add-on CAD dedicato, non ancora integrato."
             ),
         )
 
