@@ -1,10 +1,11 @@
 """
 Logica di conversione eseguita in background (FastAPI BackgroundTasks).
-Pipeline: download file sorgente -> mesh_to_usd (USD hub interno)
-          -> usd_export (GLB) -> upload su Supabase Storage
-          -> aggiornamento stato/risultato su Supabase.
+Pipeline: download file sorgente -> mesh_to_usd (USD hub interno, con
+materiali/texture) -> usd_export (GLB) -> upload su Supabase Storage
+-> aggiornamento stato/risultato su Supabase.
 """
 import os
+import shutil
 import tempfile
 
 import requests
@@ -19,7 +20,7 @@ from app.supabase_client import (
 
 
 def process_conversion(file_url: str, fmt: str, model_id: str, user_id: str) -> None:
-    input_path = usd_path = glb_path = None
+    input_path = usd_path = glb_path = texture_dir = None
     try:
         update_model_status(model_id, "processing")
 
@@ -33,10 +34,11 @@ def process_conversion(file_url: str, fmt: str, model_id: str, user_id: str) -> 
         usd_path = input_path.replace(f".{fmt}", ".usdc")
         glb_path = input_path.replace(f".{fmt}", ".glb")
 
-        # 2. Conversione: mesh -> USD (hub interno nascosto), con metadata
+        # 2. Conversione: mesh -> USD (hub interno nascosto), con materiali/texture e metadata
         metadata = convert_mesh_to_usd(input_path, usd_path, asset_name=model_id)
+        texture_dir = metadata.get("texture_dir")
 
-        # 3. Export: USD -> GLB (per viewer web/AR)
+        # 3. Export: USD -> GLB (per viewer web/AR), texture incluse
         export_usd_to_glb(usd_path, glb_path)
 
         # 4. Upload risultato su Supabase Storage
@@ -56,7 +58,7 @@ def process_conversion(file_url: str, fmt: str, model_id: str, user_id: str) -> 
             file_path=storage_path,
             file_size=file_size,
             triangle_count=metadata["triangle_count"],
-            auto_metadata=metadata,
+            auto_metadata={k: v for k, v in metadata.items() if k != "texture_dir"},
         )
 
     except Exception as exc:
@@ -66,3 +68,5 @@ def process_conversion(file_url: str, fmt: str, model_id: str, user_id: str) -> 
         for p in (input_path, usd_path, glb_path):
             if p and os.path.exists(p):
                 os.remove(p)
+        if texture_dir and os.path.isdir(texture_dir):
+            shutil.rmtree(texture_dir, ignore_errors=True)

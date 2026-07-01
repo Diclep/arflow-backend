@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+python-multipart
+requests
+trimesh
+Pillow
+usd-core
+usd2gltf
+gltflib
+numpy
