@@ -1,7 +1,12 @@
 """
 Wrapper minimale per le operazioni Supabase necessarie al backend di conversione.
-Usa la SERVICE_ROLE key (non la anon key) perché il backend deve poter
-scrivere su qualsiasi riga indipendentemente dalle policy RLS dell'utente.
+Usa la SECRET key (sb_secret_..., non la publishable/anon) perché il backend
+deve poter scrivere su qualsiasi riga indipendentemente dalle policy RLS.
+
+Nota tecnica: con le nuove API key (sb_publishable_/sb_secret_), la chiave va
+inviata SOLO nell'header `apikey`. Inviarla anche in `Authorization: Bearer`
+(come richiedevano le vecchie service_role key basate su JWT) causa un
+rifiuto della richiesta, perché il valore non è un JWT.
 """
 import os
 import requests
@@ -17,7 +22,6 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
 def _headers(prefer_return=False):
     h = {
         "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
         "Content-Type": "application/json",
     }
     if prefer_return:
@@ -30,7 +34,6 @@ def upload_to_storage(path: str, file_bytes: bytes, content_type: str, bucket: s
     url = f"{SUPABASE_URL}/storage/v1/object/{bucket}/{path}"
     headers = {
         "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
         "Content-Type": content_type,
     }
     resp = requests.post(url, headers=headers, data=file_bytes, timeout=120)
