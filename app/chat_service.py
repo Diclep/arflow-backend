@@ -1,12 +1,8 @@
 """
 Proxy verso Gemini per la chat AI del viewer (dashboard + demo).
 La API key resta lato server (env var GEMINI_API_KEY), mai esposta al browser.
-
-Include retry con backoff esponenziale sui 503 (errore "model overloaded" /
-alta domanda lato Google — non prevedibile, ma tipicamente transitorio).
 """
 import os
-import time
 
 import requests
 
@@ -18,9 +14,6 @@ GEMINI_URL = (
 
 if not GEMINI_API_KEY:
     print("⚠ ATTENZIONE: GEMINI_API_KEY non configurata. Imposta questa variabile su Railway.")
-
-MAX_RETRIES = 3
-BASE_DELAY_SECONDS = 1.5  # 1.5s, 3s, 6s
 
 
 def _build_system_prompt(context: dict) -> str:
@@ -65,37 +58,16 @@ def ask_gemini(message: str, history: list, context: dict) -> str:
         "generationConfig": {"maxOutputTokens": 512, "temperature": 0.7},
     }
 
-    last_error = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            resp = requests.post(
-                f"{GEMINI_URL}?key={GEMINI_API_KEY}",
-                headers={"Content-Type": "application/json"},
-                json=payload,
-                timeout=30,
-            )
+    resp = requests.post(
+        f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+        headers={"Content-Type": "application/json"},
+        json=payload,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
 
-            if resp.status_code == 503:
-                # Modello sovraccarico lato Google — quasi sempre transitorio, ritenta
-                last_error = RuntimeError("Gemini temporaneamente sovraccarico (503)")
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(BASE_DELAY_SECONDS * (2 ** attempt))
-                    continue
-                raise last_error
-
-            resp.raise_for_status()
-            data = resp.json()
-            try:
-                return data["candidates"][0]["content"]["parts"][0]["text"]
-            except (KeyError, IndexError):
-                return "Risposta non disponibile."
-
-        except requests.exceptions.RequestException as exc:
-            last_error = exc
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(BASE_DELAY_SECONDS * (2 ** attempt))
-                continue
-            raise
-
-    # Non dovrebbe arrivare qui, ma per sicurezza:
-    raise last_error or RuntimeError("Errore chiamata Gemini")
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError):
+        return "Risposta non disponibile."

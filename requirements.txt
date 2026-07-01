@@ -2,8 +2,3 @@ fastapi
 uvicorn[standard]
 python-multipart
 requests
-trimesh
-usd-core
-usd2gltf
-gltflib
-numpy
