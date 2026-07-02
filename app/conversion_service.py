@@ -3,8 +3,9 @@ Logica di conversione eseguita in background (FastAPI BackgroundTasks).
 Pipeline: scarica tutti i file forniti in un'unica cartella di lavoro (così
 Blender può risolvere da solo i riferimenti relativi tra .gltf/.bin/texture o
 .obj/.mtl/texture) -> se è stato caricato uno ZIP, lo estrae -> individua il
-file 3D principale -> Blender headless (import nativo + export USD con
-materiali/texture/UV/animazioni + export GLB) -> upload GLB su Supabase
+file 3D principale -> collima le texture trovate in altre sottocartelle
+accanto al file principale -> Blender headless (import nativo + export USD
+con materiali/texture/UV/animazioni + export GLB) -> upload GLB su Supabase
 Storage -> aggiornamento stato/risultato su Supabase.
 
 File caricati per errore e non referenziati dal modello (es. una texture che
@@ -27,7 +28,6 @@ from app.supabase_client import (
 
 # Estensioni che Blender headless sa importare come file 3D "principale".
 RECOGNIZED_MAIN_EXTENSIONS = {".glb", ".gltf", ".obj", ".stl", ".ply", ".fbx", ".abc"}
-# Ordine di preferenza se nella cartella ce ne fosse più di uno (caso raro).
 _PRIORITY = [".gltf", ".glb", ".obj", ".fbx", ".abc", ".ply", ".stl"]
 
 
@@ -42,7 +42,9 @@ def _download_files(files: list, work_dir: str) -> None:
 
 
 def _extract_zip_if_present(work_dir: str) -> None:
-    """Estrae eventuali .zip nella cartella (e rimuove l'archivio dopo)."""
+    """Estrae eventuali .zip nella cartella (e rimuove l'archivio dopo).
+    Preserva la struttura a sottocartelle originale (es. Source/, Textures/):
+    la co-locazione delle texture avviene in un passo separato."""
     for name in list(os.listdir(work_dir)):
         if name.lower().endswith(".zip"):
             zpath = os.path.join(work_dir, name)
@@ -50,18 +52,9 @@ def _extract_zip_if_present(work_dir: str) -> None:
                 zf.extractall(work_dir)
             os.remove(zpath)
 
-    # Molti archivi creano un'unica sottocartella (es. "model/model.gltf");
-    # per semplicità "risaliamo" tutto al livello principale.
-    entries = [e for e in os.listdir(work_dir) if not e.startswith("__MACOSX")]
-    if len(entries) == 1 and os.path.isdir(os.path.join(work_dir, entries[0])):
-        sub = os.path.join(work_dir, entries[0])
-        for name in os.listdir(sub):
-            shutil.move(os.path.join(sub, name), os.path.join(work_dir, name))
-        os.rmdir(sub)
-
 
 def _find_main_file(work_dir: str):
-    """Trova il file 3D principale nella cartella (BFS su eventuali sottocartelle residue)."""
+    """Trova il file 3D principale in tutta la cartella, incluse le sottocartelle."""
     found_by_ext = {}
     for root, _dirs, filenames in os.walk(work_dir):
         for fname in filenames:
@@ -72,6 +65,38 @@ def _find_main_file(work_dir: str):
         if ext in found_by_ext:
             return found_by_ext[ext]
     return None
+
+
+def _collocate_supporting_files(work_dir: str, main_file: str) -> None:
+    """
+    Copia ogni altro file trovato nell'archivio (texture, .bin, .mtl, ecc.)
+    nella STESSA cartella del file 3D principale.
+
+    Perché serve: molti export (es. Sketchfab) organizzano lo ZIP in
+    sottocartelle separate (es. "Source/model.gltf" + "Textures/diffuse.png").
+    Il file principale però referenzia le texture con percorsi relativi
+    "semplici" (solo il nome file, es. "diffuse.png"), assumendo che siano
+    nella sua stessa cartella. Senza questo passo, Blender non le troverebbe.
+
+    Non sposta né elimina nulla dalla posizione originale: copia soltanto,
+    quindi eventuali riferimenti relativi più complessi (es. "../Textures/x.png")
+    continuano a funzionare comunque.
+    """
+    main_dir = os.path.dirname(main_file)
+    main_name = os.path.basename(main_file)
+    for root, _dirs, filenames in os.walk(work_dir):
+        if os.path.abspath(root) == os.path.abspath(main_dir):
+            continue
+        for fname in filenames:
+            if fname == main_name:
+                continue
+            src = os.path.join(root, fname)
+            dst = os.path.join(main_dir, fname)
+            if not os.path.exists(dst):
+                try:
+                    shutil.copy2(src, dst)
+                except Exception:
+                    pass  # file non copiabile (permessi, ecc.) — non blocca la conversione
 
 
 def process_conversion(files: list, main_format: str, model_id: str, user_id: str) -> None:
@@ -92,14 +117,14 @@ def process_conversion(files: list, main_format: str, model_id: str, user_id: st
                 f"(supportati: {sorted(RECOGNIZED_MAIN_EXTENSIONS)})."
             )
 
-        usd_path = os.path.join(work_dir, "_arflow_output.usdc")
-        glb_path = os.path.join(work_dir, "_arflow_output.glb")
+        _collocate_supporting_files(work_dir, main_file)
 
-        # Blender importa il file principale: eventuali .bin/texture/.mtl nella
-        # stessa cartella vengono risolti automaticamente dai suoi importer
-        # nativi (stesso comportamento di un import manuale da quella cartella).
-        # Texture mancanti -> materiale resta senza quella texture (grigio di
-        # default). File extra non referenziati -> semplicemente ignorati.
+        usd_path = os.path.join(os.path.dirname(main_file), "_arflow_output.usdc")
+        glb_path = os.path.join(os.path.dirname(main_file), "_arflow_output.glb")
+
+        # Blender importa il file principale: eventuali .bin/texture/.mtl,
+        # ora tutti co-locati nella stessa cartella, vengono risolti
+        # automaticamente dai suoi importer nativi.
         metadata = convert_mesh_to_usd_and_glb(main_file, usd_path, glb_path)
 
         with open(glb_path, "rb") as f:
