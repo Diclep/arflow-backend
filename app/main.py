@@ -1,14 +1,13 @@
 """
 ARFlow Backend — Microservizio di conversione modelli 3D
-Pipeline: GLB/glTF/OBJ/STL/PLY/FBX/ABC -> OpenUSD (hub interno nascosto,
-via Blender headless) -> GLB
-(STEP/STP e altri formati CAD nativi restano fuori: Blender non li supporta
-nativamente, richiederebbero un add-on dedicato o OpenCASCADE — fase futura)
+Pipeline: file (o gruppo di file: glTF+bin+texture, OBJ+mtl+texture, o uno ZIP)
+-> OpenUSD (hub interno nascosto, via Blender headless) -> GLB
+(STEP/STP/IGES restano fuori: Blender non li supporta nativamente)
 """
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 from app.conversion_service import process_conversion
 from app.chat_service import ask_gemini
@@ -16,7 +15,7 @@ from app.chat_service import ask_gemini
 app = FastAPI(
     title="ARFlow Conversion Backend",
     description="Microservizio per conversione modelli 3D verso OpenUSD e glTF/GLB",
-    version="0.4.0",
+    version="0.5.0",
 )
 
 app.add_middleware(
@@ -30,7 +29,7 @@ app.add_middleware(
 
 @app.get("/")
 def root():
-    return {"service": "ARFlow Conversion Backend", "status": "online", "version": "0.4.0"}
+    return {"service": "ARFlow Conversion Backend", "status": "online", "version": "0.5.0"}
 
 
 @app.get("/health")
@@ -38,11 +37,16 @@ def health():
     return {"status": "ok"}
 
 
+class ConvertFile(BaseModel):
+    name: str  # nome file originale (serve a Blender per risolvere i riferimenti relativi)
+    url: str
+
+
 class ConvertRequest(BaseModel):
     model_config = {"protected_namespaces": ()}
 
-    file_url: str
-    format: str
+    files: List[ConvertFile]
+    main_format: str  # estensione del file 3D principale, oppure "zip"
     model_id: str
     user_id: str
     callback_url: Optional[str] = None
@@ -54,37 +58,44 @@ class ConvertResponse(BaseModel):
     message: str
 
 
-# Formati supportati nativamente da Blender headless.
-# STEP/STP/IGES restano fuori: Blender non li importa senza add-on dedicato.
-SUPPORTED_FORMATS = ["glb", "gltf", "obj", "stl", "ply", "fbx", "abc"]
+# Formati supportati nativamente da Blender headless, più "zip" come contenitore
+# (verrà estratto e il file 3D principale individuato al suo interno).
+SUPPORTED_FORMATS = ["glb", "gltf", "obj", "stl", "ply", "fbx", "abc", "zip"]
 
 
 @app.post("/convert", response_model=ConvertResponse)
 def convert_file(req: ConvertRequest, background_tasks: BackgroundTasks):
     """
-    Avvia la conversione in background: file sorgente -> USD (hub interno,
-    via Blender headless) -> GLB. Stato monitorabile su Supabase (colonna
-    status: processing / ready / error).
+    Avvia la conversione in background. Accetta uno o più file (es. .gltf + .bin +
+    texture, o .obj + .mtl + texture) oppure un singolo file .zip che li contiene.
+    Tutti i file vengono scaricati nella stessa cartella di lavoro, cosi Blender
+    può risolvere automaticamente i riferimenti tra loro (stesso comportamento
+    che avrebbe aprendo quei file manualmente in Blender dalla stessa cartella).
     """
-    fmt = req.format.lower()
+    fmt = req.main_format.lower()
     if fmt not in SUPPORTED_FORMATS:
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Formato '{fmt}' non ancora supportato. "
-                f"Supportati ora: {SUPPORTED_FORMATS}. "
-                f"STEP/STP/IGES richiedono un add-on CAD dedicato, non ancora integrato."
+                f"Supportati ora: {SUPPORTED_FORMATS}."
             ),
         )
+    if not req.files:
+        raise HTTPException(status_code=400, detail="Nessun file fornito.")
 
     background_tasks.add_task(
-        process_conversion, req.file_url, fmt, req.model_id, req.user_id
+        process_conversion,
+        [{"name": f.name, "url": f.url} for f in req.files],
+        fmt,
+        req.model_id,
+        req.user_id,
     )
 
     return ConvertResponse(
         model_id=req.model_id,
         status="processing",
-        message=f"Conversione {fmt.upper()} avviata in background",
+        message=f"Conversione avviata ({len(req.files)} file, formato principale {fmt.upper()})",
     )
 
 

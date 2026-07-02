@@ -5,11 +5,11 @@ Script eseguito DENTRO Blender in modalità headless (bpy). Uso:
       <input> <usd_output> <glb_output> <meta_output>
 
 Importa il file sorgente usando gli importer nativi di Blender, poi esporta:
-  - USD (.usdc): hub interno nascosto, con materiali/texture/UV/gerarchia
-  - GLB: per il viewer web/AR
+  - USD (.usdc): hub interno nascosto, con materiali/texture/UV/gerarchia/animazioni
+  - GLB: per il viewer web/AR — animazioni incluse esplicitamente (per il player
+    Play/Pause/Stop/Take lato frontend, che le legge da gltf.animations)
   - JSON metadata: triangle_count, bounding_box, hierarchy (gerarchia VERA,
-    non solo lista di mesh — includono anche gli Empty/gruppi, come si vede
-    nell'Outliner di Blender)
+    non solo lista di mesh — includono anche gli Empty/gruppi)
 
 Nota sui parametri Blender: i nomi esatti delle property di wm.usd_export
 cambiano tra versioni (es. export_textures -> export_textures_mode in 5.0).
@@ -26,9 +26,6 @@ import bpy
 from mathutils import Vector
 
 
-# ── Import multi-formato, con fallback su nomi di operatori alternativi ───────
-# (alcuni operatori sono stati rinominati tra versioni Blender: es. STL/OBJ
-# sono passati da import_mesh.*/import_scene.* a wm.*_import in Blender 4.x+)
 IMPORT_CANDIDATES = {
     ".glb": [("import_scene", "gltf")],
     ".gltf": [("import_scene", "gltf")],
@@ -67,8 +64,6 @@ def _filter_supported_kwargs(operator, desired: dict) -> dict:
     try:
         valid_props = {p.identifier for p in operator.get_rna_type().properties}
     except Exception:
-        # Se l'introspezione fallisce per qualche motivo, meglio non passare nulla
-        # di rischioso piuttosto che far crashare l'intera conversione.
         print("[ARFlow] Introspezione parametri operatore fallita, uso solo filepath.")
         return {}
 
@@ -140,9 +135,6 @@ def main():
         json.dump(metadata, f)
 
     # ── Export USD — impostazioni allineate a quelle scelte per il progetto ──
-    # (Root Prim /root, Animation incluse, texture "keep", USD Preview Surface).
-    # I parametri qui sotto sono filtrati automaticamente: se un nome non esiste
-    # in questa versione di Blender viene ignorato e loggato, non crasha nulla.
     desired_usd_kwargs = {
         "root_prim_path": "/root",
         "selected_objects_only": False,
@@ -168,8 +160,11 @@ def main():
     usd_kwargs = _filter_supported_kwargs(bpy.ops.wm.usd_export, desired_usd_kwargs)
     bpy.ops.wm.usd_export(filepath=usd_out, **usd_kwargs)
 
-    # ── Export GLB — per il viewer/AR ──────────────────────────────────────
-    bpy.ops.export_scene.gltf(filepath=glb_out, export_format="GLB")
+    # ── Export GLB — per il viewer/AR. export_animations esplicito: le
+    #    animazioni servono al player Play/Pause/Stop/Take nel frontend. ────
+    desired_gltf_kwargs = {"export_format": "GLB", "export_animations": True}
+    gltf_kwargs = _filter_supported_kwargs(bpy.ops.export_scene.gltf, desired_gltf_kwargs)
+    bpy.ops.export_scene.gltf(filepath=glb_out, **gltf_kwargs)
 
     print(f"CONVERSIONE OK: {triangle_count} triangoli, {len(scene_objects)} oggetti")
 
