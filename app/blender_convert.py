@@ -6,17 +6,14 @@ Script eseguito DENTRO Blender in modalità headless (bpy). Uso:
 
 Importa il file sorgente usando gli importer nativi di Blender, poi esporta:
   - USD (.usdc): hub interno nascosto, con materiali/texture/UV/gerarchia/animazioni
-  - GLB: per il viewer web/AR — animazioni incluse esplicitamente (per il player
-    Play/Pause/Stop/Take lato frontend, che le legge da gltf.animations)
-  - JSON metadata: triangle_count, bounding_box, hierarchy (gerarchia VERA,
-    non solo lista di mesh — includono anche gli Empty/gruppi)
+  - GLB: per il viewer web/AR — animazioni incluse esplicitamente
+  - JSON metadata: triangle_count, bounding_box, hierarchy, ed eventuali avvisi
+    (texture ridimensionate, texture non trovate)
 
-Nota sui parametri Blender: i nomi esatti delle property di wm.usd_export
-cambiano tra versioni (es. export_textures -> export_textures_mode in 5.0).
-Per non far crashare lo script su un nome sbagliato, i parametri desiderati
-vengono filtrati contro le property REALMENTE presenti in questa versione di
-Blender (_filter_supported_kwargs) — quelli non supportati vengono ignorati
-e loggati, non causano un errore fatale.
+Texture oltre i 2K vengono ridimensionate al 50% prima dell'export: servono
+a contenere la memoria usata da Blender (una texture 4K/8K scompattata in RAM
+pesa molto più del file compresso su disco — causa comune di crash per OOM
+con asset ricchi di texture).
 """
 import sys
 import os
@@ -35,6 +32,9 @@ IMPORT_CANDIDATES = {
     ".fbx": [("import_scene", "fbx")],
     ".abc": [("wm", "alembic_import")],
 }
+
+MAX_TEXTURE_DIMENSION = 2048
+TEXTURE_DOWNSCALE_FACTOR = 0.5
 
 
 def _import_file(input_path: str) -> None:
@@ -56,6 +56,29 @@ def _import_file(input_path: str) -> None:
         f"Nessun operatore di import disponibile per {ext} in questa versione "
         f"di Blender (provati: {candidates}). Ultimo errore: {last_error}"
     )
+
+
+def _downscale_large_textures(max_dim: int = MAX_TEXTURE_DIMENSION,
+                               factor: float = TEXTURE_DOWNSCALE_FACTOR) -> list:
+    """Riduce le texture più grandi di max_dim su un lato, per contenere la
+    memoria usata da Blender durante l'export. Ritorna la lista degli avvisi
+    (utile per capire cosa è stato toccato, senza bloccare la conversione)."""
+    warnings = []
+    for img in bpy.data.images:
+        try:
+            w, h = img.size[0], img.size[1]
+        except Exception:
+            continue
+        if w <= 0 or h <= 0:
+            continue
+        if w > max_dim or h > max_dim:
+            new_w, new_h = max(1, int(w * factor)), max(1, int(h * factor))
+            try:
+                img.scale(new_w, new_h)
+                warnings.append(f"{img.name}: {w}x{h} -> {new_w}x{new_h} (troppo pesante)")
+            except Exception as e:
+                warnings.append(f"{img.name}: ridimensionamento non riuscito ({e})")
+    return warnings
 
 
 def _filter_supported_kwargs(operator, desired: dict) -> dict:
@@ -109,6 +132,10 @@ def main():
     bpy.ops.wm.read_factory_settings(use_empty=True)
     _import_file(input_path)
 
+    texture_warnings = _downscale_large_textures()
+    for w in texture_warnings:
+        print(f"[ARFlow] Texture ridimensionata: {w}")
+
     scene_objects = list(bpy.context.scene.objects)
     mesh_objects = [o for o in scene_objects if o.type == "MESH"]
 
@@ -131,6 +158,9 @@ def main():
         "bounding_box": {"min": min_co, "max": max_co} if mesh_objects else None,
         "hierarchy": _build_hierarchy(scene_objects),
     }
+    if texture_warnings:
+        metadata["texture_resize_warnings"] = texture_warnings
+
     with open(meta_out, "w") as f:
         json.dump(metadata, f)
 
@@ -160,8 +190,7 @@ def main():
     usd_kwargs = _filter_supported_kwargs(bpy.ops.wm.usd_export, desired_usd_kwargs)
     bpy.ops.wm.usd_export(filepath=usd_out, **usd_kwargs)
 
-    # ── Export GLB — per il viewer/AR. export_animations esplicito: le
-    #    animazioni servono al player Play/Pause/Stop/Take nel frontend. ────
+    # ── Export GLB — per il viewer/AR. export_animations esplicito. ────────
     desired_gltf_kwargs = {"export_format": "GLB", "export_animations": True}
     gltf_kwargs = _filter_supported_kwargs(bpy.ops.export_scene.gltf, desired_gltf_kwargs)
     bpy.ops.export_scene.gltf(filepath=glb_out, **gltf_kwargs)
